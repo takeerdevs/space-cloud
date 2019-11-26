@@ -3,16 +3,16 @@ package auth
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/spaceuptech/space-cloud/config"
 	"github.com/spaceuptech/space-cloud/model"
 	"github.com/spaceuptech/space-cloud/utils"
 
 	"github.com/spaceuptech/space-cloud/modules/crud"
-	"github.com/spaceuptech/space-cloud/modules/functions"
 )
 
-func (m *Module) matchRule(project string, rule *config.Rule, args map[string]interface{}, auth map[string]interface{}) error {
+func (m *Module) matchRule(ctx context.Context, project string, rule *config.Rule, args map[string]interface{}, auth map[string]interface{}) error {
 	if project != m.project {
 		return errors.New("invalid project details provided")
 	}
@@ -40,38 +40,30 @@ func (m *Module) matchRule(project string, rule *config.Rule, args map[string]in
 	case "or":
 		return matchOr(rule, args)
 
-	case "func":
-		return matchFunc(rule, m.functions, args)
+	case "webhook":
+		return matchFunc(ctx, rule, m.makeHttpRequest, args)
 
 	case "query":
-		return matchQuery(project, rule, m.crud, args)
+		return matchQuery(ctx, project, rule, m.crud, args)
 
 	default:
 		return ErrIncorrectMatch
 	}
 }
 
-func matchFunc(rule *config.Rule, functions *functions.Module, args map[string]interface{}) error {
+func matchFunc(ctx context.Context, rule *config.Rule, MakeHttpRequest utils.MakeHttpRequest, args map[string]interface{}) error {
 	obj := args["args"].(map[string]interface{})
-	auth := obj["auth"].(map[string]interface{})
-	delete(obj, "auth")
+	token := obj["token"].(string)
+	delete(obj, "token")
 
-	res, err := functions.Call(rule.Service, rule.Func, auth, obj, 5)
-	if err != nil {
-		return err
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	if resObj, ok := res.(map[string]interface{}); ok {
-		if ackTemp, p := resObj["ack"]; p {
-			if ack, ok := ackTemp.(bool); ok && ack {
-				return nil
-			}
-		}
-	}
-	return ErrIncorrectMatch
+	var result interface{}
+	return MakeHttpRequest(ctx, "POST", rule.Url, token, obj, &result)
 }
 
-func matchQuery(project string, rule *config.Rule, crud *crud.Module, args map[string]interface{}) error {
+func matchQuery(ctx context.Context, project string, rule *config.Rule, crud *crud.Module, args map[string]interface{}) error {
 	// Adjust the find object to load any variables referenced from state
 	rule.Find = utils.Adjust(rule.Find, args).(map[string]interface{})
 
@@ -79,7 +71,7 @@ func matchQuery(project string, rule *config.Rule, crud *crud.Module, args map[s
 	req := &model.ReadRequest{Find: rule.Find, Operation: utils.One}
 
 	// Execute the read request
-	_, err := crud.Read(context.TODO(), rule.DB, project, rule.Col, req)
+	_, err := crud.Read(ctx, rule.DB, project, rule.Col, req)
 	return err
 }
 

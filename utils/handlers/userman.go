@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
 
 	"github.com/spaceuptech/space-cloud/modules/userman"
+	"github.com/spaceuptech/space-cloud/utils"
 )
 
 // HandleProfile returns the handler for fetching single user profile
@@ -18,6 +18,7 @@ func HandleProfile(userManagement *userman.Module) http.HandlerFunc {
 		// Create a context of execution
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
+		defer r.Body.Close()
 
 		// Get the path parameters
 		vars := mux.Vars(r)
@@ -26,11 +27,7 @@ func HandleProfile(userManagement *userman.Module) http.HandlerFunc {
 		id := vars["id"]
 
 		// Get the JWT token from header
-		tokens, ok := r.Header["Authorization"]
-		if !ok {
-			tokens = []string{""}
-		}
-		token := strings.TrimPrefix(tokens[0], "Bearer ")
+		token := utils.GetTokenFromHeader(r)
 
 		status, result, err := userManagement.Profile(ctx, token, dbType, project, id)
 
@@ -56,11 +53,8 @@ func HandleProfiles(userManagement *userman.Module) http.HandlerFunc {
 		dbType := vars["dbType"]
 
 		// Get the JWT token from header
-		tokens, ok := r.Header["Authorization"]
-		if !ok {
-			tokens = []string{""}
-		}
-		token := strings.TrimPrefix(tokens[0], "Bearer ")
+		token := utils.GetTokenFromHeader(r)
+		defer r.Body.Close()
 
 		status, result, err := userManagement.Profiles(ctx, token, dbType, project)
 
@@ -143,11 +137,7 @@ func HandleEmailEditProfile(userManagement *userman.Module) http.HandlerFunc {
 		id := vars["id"]
 
 		// Get the JWT token from header
-		tokens, ok := r.Header["Authorization"]
-		if !ok {
-			tokens = []string{""}
-		}
-		token := strings.TrimPrefix(tokens[0], "Bearer ")
+		token := utils.GetTokenFromHeader(r)
 
 		// Load the request from the body
 		req := map[string]interface{}{}

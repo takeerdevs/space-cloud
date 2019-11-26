@@ -2,6 +2,7 @@ package eventing
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"time"
 
@@ -12,13 +13,15 @@ import (
 )
 
 func (m *Module) processStagedEvents(t *time.Time) {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
 
 	// Return if module is not enabled
-	if !m.config.Enabled {
+	if !m.IsEnabled() {
 		return
 	}
+	m.lock.RLock()
+	project := m.project
+	dbType, col := m.config.DBType, m.config.Col
+	m.lock.RUnlock()
 
 	// Create a context with 5 second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -34,9 +37,7 @@ func (m *Module) processStagedEvents(t *time.Time) {
 		},
 	}}
 
-	dbType, col := m.config.DBType, m.config.Col
-
-	results, err := m.crud.Read(ctx, dbType, m.project, col, &readRequest)
+	results, err := m.crud.Read(ctx, dbType, project, col, &readRequest)
 	if err != nil {
 		log.Println("Eventing stage routine error:", err)
 		return
@@ -57,6 +58,9 @@ func (m *Module) processStagedEvents(t *time.Time) {
 }
 
 func (m *Module) processStagedEvent(eventDoc *model.EventDocument) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
 	// Create a context with 5 second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -76,48 +80,43 @@ func (m *Module) processStagedEvent(eventDoc *model.EventDocument) {
 	// Create a variable to track retries
 	retries := 0
 
+	// Payload will be of type json. Unmarshal it before sending
+	var doc interface{}
+	json.Unmarshal([]byte(eventDoc.Payload.(string)), &doc)
+	eventDoc.Payload = doc
+
+	cloudEvent := model.CloudEventPayload{SpecVersion: "1.0-rc1", Type: eventDoc.Type, Source: m.syncMan.GetEventSource(), Id: eventDoc.ID,
+		Time: time.Unix(0, eventDoc.Timestamp*int64(time.Millisecond)).Format(time.RFC3339), Data: eventDoc.Payload}
+
 	for {
-		result, err := m.functions.CallWithContext(ctxLocal, eventDoc.Service, eventDoc.Function, map[string]interface{}{"id": "space-cloud-eventing"}, eventDoc)
+		token, err := m.auth.GetInternalAccessToken()
+		if err != nil {
+			log.Println("Eventing: Couldn't trigger functions -", err)
+			return
+		}
+
+		var eventResponse model.EventResponse
+		err = m.syncMan.MakeHTTPRequest(ctxLocal, "POST", eventDoc.Url, token, cloudEvent, &eventResponse)
 		if err == nil {
-			// Check if the result is an object
-			obj, ok := result.(map[string]interface{})
-			if ok {
-				// Check if ack is present in response
-				if ackTemp, p := obj["ack"]; p {
+			var eventRequests []*model.QueueEventRequest
 
-					// Check if the ack is true
-					if ack, ok := ackTemp.(bool); ok && ack {
+			// Check if response contains an event request
+			if eventResponse.Event != nil {
+				eventRequests = append(eventRequests, eventResponse.Event)
+			}
 
-						// Check if response contains an event request
-						var eventRequests []*model.QueueEventRequest
-						if item, p := obj["event"]; p {
-							req := new(model.QueueEventRequest)
-							if err := mapstructure.Decode(item, req); err == nil {
-								eventRequests = append(eventRequests, req)
-							}
-						}
+			if eventResponse.Events != nil {
+				eventRequests = append(eventRequests, eventResponse.Events...)
+			}
 
-						if items, p := obj["events"]; p {
-							array := items.([]interface{})
-							for _, item := range array {
-								req := new(model.QueueEventRequest)
-								if err := mapstructure.Decode(item, req); err == nil {
-									eventRequests = append(eventRequests, req)
-								}
-							}
-						}
-
-						if len(eventRequests) > 0 {
-							if err := m.batchRequests(ctx, eventRequests); err != nil {
-								log.Println("Eventing: Couldn't persist events err -", err)
-							}
-						}
-
-						m.crud.InternalUpdate(ctx, m.config.DBType, m.project, m.config.Col, m.generateProcessedEventRequest(eventDoc.ID))
-						return
-					}
+			if len(eventRequests) > 0 {
+				if err := m.batchRequests(ctx, eventRequests); err != nil {
+					log.Println("Eventing: Couldn't persist events err -", err)
 				}
 			}
+
+			m.crud.InternalUpdate(ctxLocal, m.config.DBType, m.project, m.config.Col, m.generateProcessedEventRequest(eventDoc.ID))
+			return
 		}
 
 		log.Println("Eventing staged event handler could not get response from service:", err)
@@ -133,7 +132,7 @@ func (m *Module) processStagedEvent(eventDoc *model.EventDocument) {
 		time.Sleep(5 * time.Second)
 	}
 
-	if err := m.crud.InternalUpdate(context.TODO(), m.config.DBType, m.project, m.config.Col, m.generateFailedEventRequest(eventDoc.ID, "Max retires limit reached")); err != nil {
+	if err := m.crud.InternalUpdate(ctx, m.config.DBType, m.project, m.config.Col, m.generateFailedEventRequest(eventDoc.ID, "Max retires limit reached")); err != nil {
 		log.Println("Eventing staged event handler could not update event doc:", err)
 	}
 }

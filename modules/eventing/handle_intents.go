@@ -13,13 +13,15 @@ import (
 )
 
 func (m *Module) processIntents(t *time.Time) {
-	m.lock.RLock()
-	defer m.lock.RUnlock()
 
 	// Return if module is not enabled
-	if !m.config.Enabled {
+	if !m.IsEnabled() {
 		return
 	}
+	m.lock.RLock()
+	project := m.project
+	dbType, col := m.config.DBType, m.config.Col
+	m.lock.RUnlock()
 
 	// Create a context with 5 second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -35,9 +37,7 @@ func (m *Module) processIntents(t *time.Time) {
 		},
 	}}
 
-	dbType, col := m.config.DBType, m.config.Col
-
-	results, err := m.crud.Read(ctx, dbType, m.project, col, &readRequest)
+	results, err := m.crud.Read(ctx, dbType, project, col, &readRequest)
 	if err != nil {
 		log.Println("Eventing intent routine error:", err)
 		return
@@ -62,6 +62,9 @@ func (m *Module) processIntents(t *time.Time) {
 }
 
 func (m *Module) processIntent(eventDoc *model.EventDocument) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
 	// Create a context with 5 second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -74,7 +77,7 @@ func (m *Module) processIntent(eventDoc *model.EventDocument) {
 	case utils.EventCreate:
 		// Unmarshal the payload
 		createEvent := model.DatabaseEventMessage{}
-		if err := json.Unmarshal([]byte(eventDoc.Payload), &createEvent); err != nil {
+		if err := json.Unmarshal([]byte(eventDoc.Payload.(string)), &createEvent); err != nil {
 			return
 		}
 
@@ -99,12 +102,12 @@ func (m *Module) processIntent(eventDoc *model.EventDocument) {
 
 		// Broadcast the event so the concerned worker can process it immediately
 		eventDoc.Status = utils.EventStatusProcessed
-		m.broadcastEvents([]*model.EventDocument{eventDoc})
+		m.transmitEvents(eventDoc.Token, []*model.EventDocument{eventDoc})
 
 	case utils.EventUpdate:
 		// Unmarshal the payload
 		updateEvent := model.DatabaseEventMessage{}
-		json.Unmarshal([]byte(eventDoc.Payload), &updateEvent)
+		json.Unmarshal([]byte(eventDoc.Payload.(string)), &updateEvent)
 		idVar := utils.GetIDVariable(updateEvent.DBType)
 
 		// Get the document from the database
@@ -133,13 +136,13 @@ func (m *Module) processIntent(eventDoc *model.EventDocument) {
 			eventDoc.Status = utils.EventStatusProcessed
 			eventDoc.Payload = string(data)
 			eventDoc.Timestamp = timestamp
-			m.broadcastEvents([]*model.EventDocument{eventDoc})
+			m.transmitEvents(eventDoc.Token, []*model.EventDocument{eventDoc})
 		}
 
 	case utils.EventDelete:
 		// Unmarshal the payload
 		deleteEvent := model.DatabaseEventMessage{}
-		json.Unmarshal([]byte(eventDoc.Payload), &deleteEvent)
+		json.Unmarshal([]byte(eventDoc.Payload.(string)), &deleteEvent)
 		idVar := utils.GetIDVariable(deleteEvent.DBType)
 
 		// Check if document exists in database
@@ -155,7 +158,7 @@ func (m *Module) processIntent(eventDoc *model.EventDocument) {
 		if err := m.crud.InternalUpdate(ctx, m.config.DBType, m.project, m.config.Col, m.generateStageEventRequest(eventID)); err == nil {
 			// Broadcast the event so the concerned worker can process it immediately
 			eventDoc.Status = utils.EventStatusProcessed
-			m.broadcastEvents([]*model.EventDocument{eventDoc})
+			m.transmitEvents(eventDoc.Token, []*model.EventDocument{eventDoc})
 		}
 
 	}

@@ -33,7 +33,7 @@ func (m *Module) Profile(ctx context.Context, token, dbType, project, id string)
 	req := &model.ReadRequest{Find: find, Operation: utils.One}
 
 	// Check if the user is authenticated
-	status, err := m.auth.IsReadOpAuthorised(project, dbType, "users", token, req)
+	status, err := m.auth.IsReadOpAuthorised(ctx, project, dbType, "users", token, req)
 	if err != nil {
 		return status, nil, err
 	}
@@ -62,7 +62,7 @@ func (m *Module) Profiles(ctx context.Context, token, dbType, project string) (i
 	req := &model.ReadRequest{Find: find, Operation: utils.All}
 
 	// Check if the user is authenticated
-	status, err := m.auth.IsReadOpAuthorised(project, dbType, "users", token, req)
+	status, err := m.auth.IsReadOpAuthorised(ctx, project, dbType, "users", token, req)
 	if err != nil {
 		return status, nil, err
 	}
@@ -86,7 +86,7 @@ func (m *Module) Profiles(ctx context.Context, token, dbType, project string) (i
 // EmailSignIn signins the user and returns a JWT token
 func (m *Module) EmailSignIn(ctx context.Context, dbType, project, email, password string) (int, map[string]interface{}, error) {
 	// Allow this feature only if the email sign in function is enabled
-	if !m.IsEnabled() {
+	if !m.IsActive("email") {
 		return http.StatusNotFound, nil, errors.New("Email sign in feature is not enabled")
 	}
 
@@ -130,7 +130,7 @@ func (m *Module) EmailSignIn(ctx context.Context, dbType, project, email, passwo
 // EmailSignUp signs up a user and return a JWT token
 func (m *Module) EmailSignUp(ctx context.Context, dbType, project, email, name, password, role string) (int, map[string]interface{}, error) {
 	// Allow this feature only if the email sign in function is enabled
-	if !m.IsEnabled() {
+	if !m.IsActive("email") {
 		return http.StatusNotFound, nil, errors.New("Email sign in feature is not enabled")
 	}
 
@@ -222,7 +222,7 @@ func (m *Module) EmailEditProfile(ctx context.Context, token, dbType, project, i
 	req.Update = update
 	req.Operation = utils.One
 
-	status, err := m.auth.IsUpdateOpAuthorised(project, dbType, "users", token, req)
+	status, err := m.auth.IsUpdateOpAuthorised(ctx, project, dbType, "users", token, req)
 	if err != nil {
 		return status, nil, err
 	}

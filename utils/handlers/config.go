@@ -1,14 +1,10 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/spaceuptech/space-cloud/config"
-	"github.com/spaceuptech/space-cloud/modules/auth"
 	"github.com/spaceuptech/space-cloud/utils"
 	"github.com/spaceuptech/space-cloud/utils/admin"
 	"github.com/spaceuptech/space-cloud/utils/syncman"
@@ -17,13 +13,15 @@ import (
 // HandleLoadEnv returns the handler to load the projects via a REST endpoint
 func HandleLoadEnv(adminMan *admin.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]interface{}{"isProd": adminMan.LoadEnv()})
 	}
 }
 
 // HandleAdminLogin creates the admin login endpoint
-func HandleAdminLogin(adminMan *admin.Manager, syncMan *syncman.SyncManager) http.HandlerFunc {
+func HandleAdminLogin(adminMan *admin.Manager, syncMan *syncman.Manager) http.HandlerFunc {
 
 	type Request struct {
 		User string `json:"user"`
@@ -53,15 +51,13 @@ func HandleAdminLogin(adminMan *admin.Manager, syncMan *syncman.SyncManager) htt
 }
 
 // HandleLoadProjects returns the handler to load the projects via a REST endpoint
-func HandleLoadProjects(adminMan *admin.Manager, syncMan *syncman.SyncManager, configPath string) http.HandlerFunc {
+func HandleLoadProjects(adminMan *admin.Manager, syncMan *syncman.Manager, configPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		// Get the JWT token from header
-		tokens, ok := r.Header["Authorization"]
-		if !ok {
-			tokens = []string{""}
-		}
-		token := strings.TrimPrefix(tokens[0], "Bearer ")
+		token := utils.GetTokenFromHeader(r)
+
+		defer r.Body.Close()
 
 		// Check if the request is authorised
 		if err := adminMan.IsTokenValid(token); err != nil {
@@ -98,16 +94,12 @@ func HandleLoadProjects(adminMan *admin.Manager, syncMan *syncman.SyncManager, c
 	}
 }
 
-// HandleStoreProjectConfig returns the handler to store the config of a project via a REST endpoint
-func HandleStoreProjectConfig(adminMan *admin.Manager, syncMan *syncman.SyncManager, configPath string) http.HandlerFunc {
+// HandleGlobalConfig returns the handler to store the global config of a project via a REST endpoint
+func HandleGlobalConfig(adminMan *admin.Manager, syncMan *syncman.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		// Get the JWT token from header
-		tokens, ok := r.Header["Authorization"]
-		if !ok {
-			tokens = []string{""}
-		}
-		token := strings.TrimPrefix(tokens[0], "Bearer ")
+		token := utils.GetTokenFromHeader(r)
 
 		// Load the body of the request
 		c := new(config.Project)
@@ -130,7 +122,7 @@ func HandleStoreProjectConfig(adminMan *admin.Manager, syncMan *syncman.SyncMana
 		}
 
 		// Sync the config
-		if err := syncMan.SetProjectConfig(token, c); err != nil {
+		if err := syncMan.SetProjectGlobalConfig(c); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
@@ -142,87 +134,15 @@ func HandleStoreProjectConfig(adminMan *admin.Manager, syncMan *syncman.SyncMana
 	}
 }
 
-// HandleModifySchemas creates the schema for all databases present in the config
-func HandleModifySchemas(auth *auth.Module, adminMan *admin.Manager) http.HandlerFunc {
+// HandleStoreProjectConfig returns the handler to store the config of a project via a REST endpoint
+func HandleStoreProjectConfig(adminMan *admin.Manager, syncMan *syncman.Manager, configPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
 
 		// Get the JWT token from header
-		tokens, ok := r.Header["Authorization"]
-		if !ok {
-			tokens = []string{""}
-		}
-		token := strings.TrimPrefix(tokens[0], "Bearer ")
-
-		// Check if the request is authorised
-		if err := adminMan.IsTokenValid(token); err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
+		token := utils.GetTokenFromHeader(r)
 
 		// Load the body of the request
-		c := config.Crud{}
-		if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-		defer r.Body.Close()
-
-		if err := auth.Schema.ModifyAllCollections(ctx, c); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-
-		// Give positive acknowledgement
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(utils.M{})
-	}
-}
-
-// HandleLoadStaticConfig returns the handler to load the projects via a REST endpoint
-func HandleLoadStaticConfig(adminMan *admin.Manager, syncMan *syncman.SyncManager) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-
-		// Get the JWT token from header
-		tokens, ok := r.Header["Authorization"]
-		if !ok {
-			tokens = []string{""}
-		}
-		token := strings.TrimPrefix(tokens[0], "Bearer ")
-
-		// Check if the request is authorised
-		if err := adminMan.IsTokenValid(token); err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-
-		// Load config from file
-		c := syncMan.GetGlobalConfig()
-
-		// Give positive acknowledgement
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{"static": c.Static})
-	}
-}
-
-// HandleStoreStaticConfig returns the handler to store the config of a project via a REST endpoint
-func HandleStoreStaticConfig(adminMan *admin.Manager, syncMan *syncman.SyncManager) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-
-		// Get the JWT token from header
-		tokens, ok := r.Header["Authorization"]
-		if !ok {
-			tokens = []string{""}
-		}
-		token := strings.TrimPrefix(tokens[0], "Bearer ")
-
-		// Load the body of the request
-		c := new(config.Static)
+		c := new(config.Project)
 		err := json.NewDecoder(r.Body).Decode(c)
 		defer r.Body.Close()
 
@@ -234,7 +154,7 @@ func HandleStoreStaticConfig(adminMan *admin.Manager, syncMan *syncman.SyncManag
 		}
 
 		// Check if the request is authorised
-		status, err := adminMan.IsAdminOpAuthorised(token, "static")
+		status, err := adminMan.IsAdminOpAuthorised(token, c.ID)
 		if err != nil {
 			w.WriteHeader(status)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -242,8 +162,7 @@ func HandleStoreStaticConfig(adminMan *admin.Manager, syncMan *syncman.SyncManag
 		}
 
 		// Sync the config
-		err = syncMan.SetStaticConfig(token, c)
-		if err != nil {
+		if err := syncMan.SetProjectConfig(c); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
@@ -255,49 +174,11 @@ func HandleStoreStaticConfig(adminMan *admin.Manager, syncMan *syncman.SyncManag
 	}
 }
 
-// HandleLoadDeploymentConfig returns the handler to load the deployment config via a REST endpoint
-func HandleLoadDeploymentConfig(adminMan *admin.Manager, syncMan *syncman.SyncManager, configPath string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-
-		// Give negative acknowledgement
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{"deploy": config.Deploy{}})
-	}
-}
-
-// HandleStoreDeploymentConfig returns the handler to store the deployment config via a REST endpoint
-func HandleStoreDeploymentConfig(adminMan *admin.Manager, syncMan *syncman.SyncManager, configPath string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-
-		// Give negative acknowledgement
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Operation not supported. Upgrade to avail this feature"})
-	}
-}
-
-// HandleLoadOperationModeConfig returns the handler to load the operation config via a REST endpoint
-func HandleLoadOperationModeConfig(adminMan *admin.Manager, syncMan *syncman.SyncManager, configPath string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-
-		// Give negative acknowledgement
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{"operation": config.OperationConfig{}})
-	}
-}
-
-// HandleStoreOperationModeConfig returns the handler to store the operation config via a REST endpoint
-func HandleStoreOperationModeConfig(adminMan *admin.Manager, syncMan *syncman.SyncManager, configPath string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-
-		// Give negative acknowledgement
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Operation not supported. Upgrade to avail this feature"})
-	}
-}
-
 // HandleDeleteProjectConfig returns the handler to delete the config of a project via a REST endpoint
-func HandleDeleteProjectConfig(adminMan *admin.Manager, syncMan *syncman.SyncManager, configPath string) http.HandlerFunc {
+func HandleDeleteProjectConfig(adminMan *admin.Manager, syncMan *syncman.Manager, configPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+
+		defer r.Body.Close()
 
 		// Give negative acknowledgement
 		w.WriteHeader(http.StatusInternalServerError)
